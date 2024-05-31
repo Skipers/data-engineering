@@ -2,13 +2,18 @@ import airflow
 from datetime import timedelta
 from datetime import datetime
 from airflow import DAG
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.utils.dates import days_ago
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.operators.postgres_operator import PostgresOperator
-from airflow.hooks.postgres_hook import PostgresHook
 from airflow.operators.python_operator import PythonOperator
+from functions.func_xcom_push import run_spark_and_push_to_xcom
+from functions.func_xcom_pull import load_to_postgresql
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
+
+connect_to_postgres = os.environ.get('postgres_connect_db')
 
 spark_args = { 
 'owner': 'airflow', 
@@ -20,7 +25,7 @@ spark_args = {
 
 
 dag_spark = DAG( 
-dag_id = "sparkoperator_demo_sql_load", 
+dag_id = "sparkoperator_data", 
 default_args = spark_args, 
 schedule_interval='0 * * * *', 
 dagrun_timeout=timedelta(minutes=60), 
@@ -28,30 +33,21 @@ description='use case of sparkoperator in airflow',
 start_date = airflow.utils.dates.days_ago(1))
 
 
-def run_spark_and_push_to_xcom(**kwargs):
-    result_path = 'file:/home/vboxuser/Documents/GitHub/data-engineering/task.csv'
-    print(f"Сохранение пути к файлу в XCom: {result_path}")
-    if os.path.exists(result_path):
-        kwargs['ti'].xcom_push(key='result_path', value=result_path)
-    else:
-        raise FileNotFoundError(f"Файл не найден по пути: {result_path}")
-
-
 spark_submit_local = SparkSubmitOperator( 
-application ='/airflow/scripts/func2.py', 
+application ='/airflow/scripts/spark_script.py', 
 conn_id= 'spark_default', 
 task_id='spark_submit_task', 
 dag=dag_spark)
 
 
 sql_create_database = PostgresOperator(
-   task_id = 'sql_command',
-   postgres_conn_id = 'main_postgres_connection',
+    task_id = 'sql_command',
+    postgres_conn_id = connect_to_postgres,
 	sql = """CREATE TABLE IF NOT EXISTS tiktok_spark (
        reviewId VARCHAR NOT NULL,
        userName VARCHAR NOT NULL,
        userImage VARCHAR NOT NULL,
-       content VARCHAR NOT NULL,
+       content VARCHAR,
        score SMALLINT NOT NULL,
 	   thumbsUpCount SMALLINT NOT NULL,
 	   reviewCreatedVersion VARCHAR NOT NULL,
@@ -62,16 +58,13 @@ sql_create_database = PostgresOperator(
 	   )
 
 
-def load_to_postgresql(**kwargs):
-    ti = kwargs['ti']
-    result_path = ti.xcom_pull(task_ids='spark_submit_task', key='result_path')
-    print(f"Путь к файлу, извлеченный из XCom: {result_path}")
-    pg_hook = PostgresHook(postgres_conn_id='main_postgres_connection')
-    
-    with open(result_path, 'r') as file:
-        pg_hook.copy_expert(sql="COPY tiktok_spark FROM STDIN WITH CSV HEADER", filename=result_path)
-        
-        
+save_path_to_xcom = PythonOperator(
+    task_id='save_path_to_xcom',
+    python_callable = run_spark_and_push_to_xcom,
+    provide_context=True,
+    dag=dag_spark)
+
+
 load_data_sql = PythonOperator(
     task_id='load_data_to_postgres',
     python_callable=load_to_postgresql,
@@ -79,7 +72,7 @@ load_data_sql = PythonOperator(
     dag=dag_spark,
 )
    
-spark_submit_local >> sql_create_database >> load_data_sql
+spark_submit_local >> save_path_to_xcom >> sql_create_database  >> load_data_sql
 
 
 if __name__ == "__main__": 
