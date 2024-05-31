@@ -12,7 +12,7 @@ def extract_data(file_type, file_path):
         .load(file_path)
     return df
 
-extract_df = extract_data('csv', '/home/vboxuser/Documents/GitHub/data-engineering/tiktok.csv')
+extract_df = extract_data('csv', '/home/vboxuser/Documents/GitHub/data-engineering/files/tiktok.csv')
 
 
 def transform_data(df):
